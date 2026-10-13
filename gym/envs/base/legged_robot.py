@@ -122,7 +122,7 @@ class LeggedRobot(BaseTask):
             self.dof_pos - self.default_dof_pos,
             reset_mask,
         )
-        masked_update(self.dof_pos_target, self.default_dof_pos, reset_mask)
+        self.dof_pos_target[reset_mask] = 0.0
         masked_update(
             self.dof_pos_history,
             self.dof_pos_target.tile(1, 3),

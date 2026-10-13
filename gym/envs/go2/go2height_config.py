@@ -7,6 +7,8 @@ class Go2HeightCfg(Go2Cfg):
 
     class commands(Go2Cfg.commands):
         resampling_time = 2.0
+        min_height = 0.22
+        max_height = 0.36
 
         class ranges:
             lin_vel_x = [0.0, 0.0]
