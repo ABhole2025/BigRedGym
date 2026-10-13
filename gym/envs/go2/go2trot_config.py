@@ -60,6 +60,9 @@ class Go2TrotCfg(Go2Cfg):
 
     class commands(Go2Cfg.commands):
         var = 1.0
+        height_min = 0.20
+        height_max = 0.40
+        height_step = 0.02
 
         class ranges(Go2Cfg.commands.ranges):
             lin_vel_x = [-1.0, 0.0, 1.0, 3.0]
