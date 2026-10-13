@@ -3,7 +3,7 @@ from gym.envs.go2.go2_config import Go2Cfg, Go2RunnerCfg
 
 class Go2TrotCfg(Go2Cfg):
     class env(Go2Cfg.env):
-        episode_length_s = 5
+        episode_length_s = 10
 
     class init_state(Go2Cfg.init_state):
         # The gait reference supplies the nominal posture; residual targets
@@ -27,7 +27,7 @@ class Go2TrotCfg(Go2Cfg):
             [0.0, 0.0],  # yaw
         ]
         root_vel_range = [
-            [-0.5, 3.0],  # x
+            [0.0, 0.0],  # x
             [-0.1, 0.1],  # y
             [-0.05, 0.05],  # z
             [0.0, 0.0],  # roll
@@ -56,16 +56,19 @@ class Go2TrotCfg(Go2Cfg):
         # position while alternately extending the stance diagonal and
         # shortening the swing diagonal.
         gait_joint_offsets = 4 * [0.0, 0.96, -1.36]
-        gait_joint_amplitudes = 4 * [0.0, -0.15, 0.30]
+        gait_joint_amplitudes = 4 * [0.0, 0.0, 0.0]
 
     class commands(Go2Cfg.commands):
-        var = 1.0
+        resampling_time = 3.0
+        var = 0.0 #removes random forward motion from the custom forward-command sampler.
         height_min = 0.20
         height_max = 0.40
         height_step = 0.02
 
         class ranges(Go2Cfg.commands.ranges):
-            lin_vel_x = [-1.0, 0.0, 1.0, 3.0]
+            lin_vel_x = [0.0, 0.0] #for assgn4 set to 0 to help isolate crouching and standing
+            lin_vel_y = 0.0
+            yaw_vel = 0.0
 
     class push_robots(Go2Cfg.push_robots):
         toggle = True
@@ -172,11 +175,11 @@ class Go2TrotRunnerCfg(Go2RunnerCfg):
                 dof_pos_limits = 0.0
                 feet_contact_forces = 0.0
                 dof_near_home = 0.0
-                tracking_base_height = 0.5
+                tracking_base_height = 2.0
                 action_rate = 0.25
                 action_rate2 = 0.025
-                trot_support = 0.625
-                swing_contact = 1.25
+                trot_support = 0.0
+                swing_contact = 0.0
 
             class termination_weight:
                 termination = 0.01
