@@ -99,6 +99,10 @@ class Go2TrotCfg(Go2Cfg):
     class scaling(Go2Cfg.scaling):
         # Canonical RobotLayout order is FL, FR, RL, RR, with
         # hip, thigh, calf inside each leg. Backends map native order to it.
+
+        # Scale the four commands: vx, vy, yaw, target base height.
+        commands = [3, 1, 3, 1.0 / 0.3]
+
         base_height = 0.3
         dof_pos = 4 * [1.0472, 2.53075, 0.94247]
         dof_pos_obs = dof_pos
