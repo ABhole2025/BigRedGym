@@ -225,6 +225,12 @@ class Go2Trot(LeggedRobot):
         error = torch.clamp(error, max=0, min=None).flatten()
         return self._sqrdexp(error)
 
+    def _reward_tracking_base_height(self):
+        """Reward tracking the commanded base height."""
+        error = (self.base_height - self.height_command).flatten()
+        error = error / self.scales["base_height"]
+        return self._sqrdexp(error)
+
     def _reward_tracking_lin_vel(self):
         """Tracking of linear velocity commands (xy axes)"""
         # just use lin_vel?
