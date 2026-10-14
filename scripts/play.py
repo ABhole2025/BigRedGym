@@ -125,6 +125,18 @@ def setup(args):
         backend=args.backend,
     )
 
+    # During interactive playback, preserve the keyboard height target
+    # when the environment resets.
+    if args.keyboard and hasattr(env, "commands") and env.commands.shape[1] >= 4:
+        original_resample = env._resample_commands
+
+        def playback_resample(command_mask):
+            saved_height = env.commands[:, 3].clone()
+            original_resample(command_mask)
+            env.commands[:, 3] = saved_height
+
+        env._resample_commands = playback_resample
+
     runner = task_registry.make_alg_runner(env, train_cfg)
     runner.switch_to_eval()
     return env, runner
