@@ -6,15 +6,16 @@ class Go2TrotCfg(Go2Cfg):
         episode_length_s = 10
 
     class init_state(Go2Cfg.init_state):
-        # The gait reference supplies the nominal posture; residual targets
-        # therefore use zero joint offsets here.
+        # Use the original Go2 standing pose as the nominal joint position.
+        # The gait reference adds no offsets for stationary height control.
         default_joint_angles = {
-            "hip_joint": 0.0,
-            "calf_joint": 0.0,
-            "FL_thigh_joint": 0.0,
-            "FR_thigh_joint": 0.0,
-            "RL_thigh_joint": 0.0,
-            "RR_thigh_joint": 0.0,
+            "hip": 0.0,
+            "thigh": 0.66,
+            "calf": -1.36,
+            #"FL_thigh_joint": 0.0,
+            #"FR_thigh_joint": 0.0,
+            #"RL_thigh_joint": 0.0,
+            #"RR_thigh_joint": 0.0,
         }
         reset_mode = "reset_to_basic"
 
@@ -55,7 +56,7 @@ class Go2TrotCfg(Go2Cfg):
         # The thigh/calf amplitudes approximately preserve fore-aft foot
         # position while alternately extending the stance diagonal and
         # shortening the swing diagonal.
-        gait_joint_offsets = 4 * [0.0, 0.96, -1.36]
+        gait_joint_offsets = 4 * [0.0, 0.0, 0.0]
         gait_joint_amplitudes = 4 * [0.0, 0.0, 0.0]
 
     class commands(Go2Cfg.commands):
