@@ -142,16 +142,48 @@ def setup(args):
     return env, runner
 
 
+#def play(env, runner):
+#    n_steps = 10 * int(env.max_episode_length)
+#    for _ in range(n_steps):
+#        runner.set_actions(
+#            runner.actor_cfg["actions"],
+#            runner.get_inference_actions(),
+#            runner.actor_cfg["disable_actions"],
+#        )
+#        env.step()
+#        env.check_exit()
+
 def play(env, runner):
+    import csv
+    import time
+
+    output = "height_1700.csv"
     n_steps = 10 * int(env.max_episode_length)
-    for _ in range(n_steps):
-        runner.set_actions(
-            runner.actor_cfg["actions"],
-            runner.get_inference_actions(),
-            runner.actor_cfg["disable_actions"],
-        )
-        env.step()
-        env.check_exit()
+
+    with open(output, "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["time_s", "target_height_m", "actual_height_m"])
+
+        start = time.monotonic()
+
+        for _ in range(n_steps):
+            runner.set_actions(
+                runner.actor_cfg["actions"],
+                runner.get_inference_actions(),
+                runner.actor_cfg["disable_actions"],
+            )
+
+            env.step()
+
+            writer.writerow([
+                time.monotonic() - start,
+                float(env.commands[0, 3].item()),
+                float(env.base_height[0].item()),
+            ])
+
+            env.check_exit()
+
+    print(f"Saved height data to {output}")
 
 
 if __name__ == "__main__":
