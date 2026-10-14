@@ -130,14 +130,42 @@ class Go2Trot(LeggedRobot):
         masked_update(self.phase_frequency, phase_frequency, reset_mask)
 
     def _resample_commands(self, command_mask):
-        # The parent sampler handles only the three velocity commands.
-        # Temporarily expose those columns to preserve its existing behavior.
-        full_commands = self.commands
-        self.commands = full_commands[:, :3]
-        try:
-            super()._resample_commands(command_mask)
-        finally:
-            self.commands = full_commands
+        if self.commands.shape[1] != 4:
+            raise RuntimeError(
+                f"Go2Trot expected 4 commands, got {self.commands.shape}. "
+                f"Environment type: {type(self).__name__}")
+        # Sample the three velocity commands directly without temporarily
+        # changing the shape of self.commands.
+        velocity_commands = torch.empty_like(self.commands[:, :3])
+
+        velocity_commands[:, 0] = torch_rand_float(
+            self.command_ranges["lin_vel_x"][0],
+            self.command_ranges["lin_vel_x"][1],
+            (self.num_envs, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        velocity_commands[:, 1] = torch_rand_float(
+            -self.command_ranges["lin_vel_y"],
+            self.command_ranges["lin_vel_y"],
+            (self.num_envs, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        max_yaw_vel = self.command_ranges["yaw_vel"]
+        velocity_commands[:, 2] = torch_rand_float(
+            -max_yaw_vel,
+            max_yaw_vel,
+            (self.num_envs, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        small_commands = torch.norm(velocity_commands[:, :2], dim=1) <= 0.2
+        velocity_commands[:, :2].masked_fill_(
+            small_commands.unsqueeze(1), 0.0
+        )
+
+        masked_update(self.commands[:, :3], velocity_commands, command_mask)
 
         # Sample a target base height for each selected environment.
         heights = torch_rand_float(
