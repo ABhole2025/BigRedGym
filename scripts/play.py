@@ -157,7 +157,7 @@ def play(env, runner):
     import csv
     import time
 
-    output = "height_1700.csv"
+    output = "height_2200_final_2.csv"
     n_steps = 10 * int(env.max_episode_length)
 
     with open(output, "w", newline="") as file:
