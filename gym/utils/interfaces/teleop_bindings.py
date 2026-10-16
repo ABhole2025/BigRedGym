@@ -24,8 +24,7 @@ natural U/O pair collides with vsim's step toggle:
      N M             N / M   yaw left / right
                      R       reset envs
                      Esc     quit (or close the window)
-                     Up/Down up / down (command effects: student TODO)
-
+                     Up/Down increase / decrease target base height
 GLFW (MuJoCo) uses ASCII codes for letter keys, so `ord(letter)` is the
 keycode. Each viewer adapter translates named special keys such as UP/DOWN
 into its native key representation.
@@ -69,6 +68,10 @@ class TeleopCommands:
     def __init__(self, env):
         self.env = env
 
+        self.min_height = 0.18
+        self.max_height = 0.38
+        self.increment_height = 0.02
+
         self.max_vel_forward = 4.0
         self.max_vel_backward = -1.0
         self.increment_x = (self.max_vel_forward - self.max_vel_backward) * 0.1
@@ -97,10 +100,24 @@ class TeleopCommands:
             c[:, 1] = torch.clamp(
                 c[:, 1] - self.increment_y, min=-self.max_vel_sideways
             )
+
         elif action == "yaw_left":
             c[:, 2] = torch.clamp(c[:, 2] + self.increment_yaw, max=self.max_vel_yaw)
+
         elif action == "yaw_right":
             c[:, 2] = torch.clamp(c[:, 2] - self.increment_yaw, min=-self.max_vel_yaw)
+
+        # Assignment 4: Base height control
+        elif action == "up":
+            self.env.height_command[:] = torch.clamp(
+                self.env.height_command + self.increment_height,
+                max=self.max_height,)
+
+        elif action == "down":
+            self.env.height_command[:] = torch.clamp(
+                self.env.height_command - self.increment_height,
+                min=self.min_height,)
+
         elif action == "reset":
             self.env.timed_out[:] = True
             self.env.reset()

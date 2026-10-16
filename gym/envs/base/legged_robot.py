@@ -218,6 +218,22 @@ class LeggedRobot(BaseTask):
         candidate[:, :2].masked_fill_(small_commands.unsqueeze(1), 0.0)
         masked_update(self.commands, candidate, command_mask)
 
+        if hasattr(self.cfg.commands, "min_height"):
+            height_candidate = torch.rand(
+                (self.num_envs, 1),
+                device=self.device,
+            )
+            height_candidate = (
+                self.cfg.commands.min_height
+                + height_candidate
+                * (self.cfg.commands.max_height - self.cfg.commands.min_height)
+            )
+            masked_update(
+                self.height_command,
+                height_candidate,
+                command_mask,
+            )
+
     def _set_camera(self, position, lookat):
         """Set camera position and direction"""
         self._backend.set_camera(position, lookat)
@@ -431,6 +447,9 @@ class LeggedRobot(BaseTask):
         )
         self.commands = torch.zeros(
             self.num_envs, 3, dtype=torch.float, device=self.device
+        )
+        self.height_command = torch.full(
+            (self.num_envs, 1), 0.30, dtype=torch.float, device=self.device,
         )
         self.base_lin_vel = quat_rotate_inverse(
             self.base_quat, self.root_states[:, 7:10]
