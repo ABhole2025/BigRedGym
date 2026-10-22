@@ -25,7 +25,9 @@ Train the Unitree Go2 to transition smoothly between a normal standing posture a
 
 The goal is to learn both transitions in simulation and attempt sim-to-real transfer onto the Go2. The robot should reach a recognizable sitting posture without falling or losing balance, and be able to return to stable standing.
 
-Stretch goals include considering partial transitions like crouching or maintaining the seated posture for an extended period.
+As a reduced-scope objective, it would be possible to focus only on one of the two transitions.
+
+Stretch goals include maintaining the seated posture for an extended period.
 
 ## How will you show it?
 
