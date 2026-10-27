@@ -12,6 +12,21 @@ class Go2Trot(LeggedRobot):
 
     def _init_buffers(self):
         super()._init_buffers()
+        # Go2Trot uses four commands:
+        # forward velocity, sideways velocity, yaw velocity, target height.
+        default_height = self.cfg.reward_settings.base_height_target
+        self.commands = torch.cat(
+            (
+                self.commands,
+                torch.full(
+                    (self.num_envs, 1),
+                    default_height,
+                    dtype=self.commands.dtype,
+                    device=self.device,
+                ),
+            ),
+            dim=1,
+        )
 
         self._actuated_dof_pos_limits = self.dof_pos_limits.index_select(
             0, self.actuated_dof_indices
@@ -115,7 +130,51 @@ class Go2Trot(LeggedRobot):
         masked_update(self.phase_frequency, phase_frequency, reset_mask)
 
     def _resample_commands(self, command_mask):
-        super()._resample_commands(command_mask)
+        if self.commands.shape[1] != 4:
+            raise RuntimeError(
+                f"Go2Trot expected 4 commands, got {self.commands.shape}. "
+                f"Environment type: {type(self).__name__}")
+        # Sample the three velocity commands directly without temporarily
+        # changing the shape of self.commands.
+        velocity_commands = torch.empty_like(self.commands[:, :3])
+
+        velocity_commands[:, 0] = torch_rand_float(
+            self.command_ranges["lin_vel_x"][0],
+            self.command_ranges["lin_vel_x"][1],
+            (self.num_envs, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        velocity_commands[:, 1] = torch_rand_float(
+            -self.command_ranges["lin_vel_y"],
+            self.command_ranges["lin_vel_y"],
+            (self.num_envs, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        max_yaw_vel = self.command_ranges["yaw_vel"]
+        velocity_commands[:, 2] = torch_rand_float(
+            -max_yaw_vel,
+            max_yaw_vel,
+            (self.num_envs, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        small_commands = torch.norm(velocity_commands[:, :2], dim=1) <= 0.2
+        velocity_commands[:, :2].masked_fill_(
+            small_commands.unsqueeze(1), 0.0
+        )
+
+        masked_update(self.commands[:, :3], velocity_commands, command_mask)
+
+        # Sample a target base height for each selected environment.
+        heights = torch_rand_float(
+            self.cfg.commands.height_min,
+            self.cfg.commands.height_max,
+            (self.num_envs, 1),
+            device=self.device,
+        ).squeeze(1)
+        masked_update(self.commands[:, 3], heights, command_mask)
 
         forward_commands = torch.tensor(
             self.command_ranges["lin_vel_x"], device=self.device
@@ -135,7 +194,7 @@ class Go2Trot(LeggedRobot):
             drop = command_mask.unsqueeze(1) & (
                 torch.rand(self.num_envs, 1, device=self.device) >= 0.8
             )
-            self.commands[:, 1:].masked_fill_(drop, 0.0)
+            self.commands[:, 1:3].masked_fill_(drop, 0.0)
             drop = command_mask.unsqueeze(1) & (
                 torch.rand(self.num_envs, 1, device=self.device) >= 0.8
             )
@@ -143,7 +202,8 @@ class Go2Trot(LeggedRobot):
             drop = command_mask.unsqueeze(1) & (
                 torch.rand(self.num_envs, 1, device=self.device) >= 0.9
             )
-            self.commands.masked_fill_(drop, 0.0)
+            self.commands[:, :3].masked_fill_(drop, 0.0)
+
 
     def _reset_idx(self, reset_mask):
         super()._reset_idx(reset_mask)
@@ -218,11 +278,13 @@ class Go2Trot(LeggedRobot):
         )
         return torch.sum(torch.exp(-error), dim=1)
 
-    def _reward_min_base_height(self):
-        """Squared exponential saturating at base_height target"""
-        error = self.base_height - self.cfg.reward_settings.base_height_target
-        error /= self.scales["base_height"]
-        error = torch.clamp(error, max=0, min=None).flatten()
+    def _reward_tracking_base_height(self):
+        """Reward matching the commanded body height."""
+        target_height = self.commands[:, 3]
+        actual_height = self.base_height.flatten()
+
+        error = (actual_height - target_height) / self.scales["base_height"]
+
         return self._sqrdexp(error)
 
     def _reward_tracking_lin_vel(self):

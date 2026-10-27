@@ -53,7 +53,7 @@ HELP_LINES = (
     "  I/K           forward / back",
     "  J/L           strafe left / strafe right",
     "  N/M           yaw left / yaw right",
-    "  Up/Down       up / down (command effects: student TODO)",
+    "  Up/Down       up / down  --> raise / lower target body height",
     "  R             reset envs",
     "  Esc / window  quit",
     "  commands step in 1/5 increments of max",
@@ -79,14 +79,26 @@ class TeleopCommands:
         self.max_vel_yaw = 2.0
         self.increment_yaw = self.max_vel_yaw * 0.2
 
+        self.has_height_command = env.commands.shape[1] >= 4
+
+        if self.has_height_command:
+            self.min_height = env.cfg.commands.height_min
+            self.max_height = env.cfg.commands.height_max
+            self.increment_height = env.cfg.commands.height_step
+
         env.commands[:] = 0.0
-        env.commands[:, 0] = 1.0  # seed forward velocity so motion is visible
+        if self.has_height_command:
+            env.commands[:, 3] = self.min_height
+        env.commands[:, 0] = 0.0  # Start stationary for height-control testing.
         if hasattr(env.cfg, "commands"):
             env.cfg.commands.resampling_time = env.max_episode_length_s + 1
 
     def apply(self, action: str) -> None:
         """Apply one discrete press of ``action`` (see BINDINGS)."""
         c = self.env.commands
+        if c.shape[1] != 4 and self.has_height_command:
+            raise RuntimeError(
+                f"Keyboard expected 4 commands, got {c.shape}")
         if action == "forward":
             c[:, 0] = torch.clamp(c[:, 0] + self.increment_x, max=self.max_vel_forward)
         elif action == "back":
@@ -101,9 +113,22 @@ class TeleopCommands:
             c[:, 2] = torch.clamp(c[:, 2] + self.increment_yaw, max=self.max_vel_yaw)
         elif action == "yaw_right":
             c[:, 2] = torch.clamp(c[:, 2] - self.increment_yaw, min=-self.max_vel_yaw)
+
+
+        elif action == "up" and self.has_height_command:
+            c[:, 3] = torch.clamp(c[:, 3] + self.increment_height, max=self.max_height,)
+            print(f"Height target: {c[0, 3].item():.3f} m", flush=True)
+        elif action == "down" and self.has_height_command:
+            c[:, 3] = torch.clamp(c[:, 3] - self.increment_height, min=self.min_height,)
+            print(f"Height target: {c[0, 3].item():.3f} m", flush=True)
+
+
         elif action == "reset":
             self.env.timed_out[:] = True
             self.env.reset()
+            self.env.commands[:, :3] = 0.0
+            if self.has_height_command:
+                self.env.commands[:, 3] = self.min_height
         else:
             raise ValueError(f"unknown teleop action {action!r}")
 
