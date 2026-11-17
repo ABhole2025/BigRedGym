@@ -1,5 +1,5 @@
 # AI-assisted: plots of the box-step reference (theta, q, p, foot offsets, joint
-# angles) over one six-beat box, straight from boxstep_reference with no simulator.
+# angles) over one 12-beat box, straight from boxstep_reference with no simulator.
 """Plot the box-step reference for one box.
 
 Usage:
@@ -10,7 +10,6 @@ Writes logs/boxstep_reference.pdf and logs/boxstep_reference.png (gitignored).
 """
 
 import argparse
-import math
 import os
 
 import matplotlib
@@ -40,18 +39,16 @@ def compute_reference_trace(tempo_bpm, step_size_m, settings):
     swing_fraction = settings.swing_time_s / beat_period
 
     beat_index, beat_fraction = reference.compute_beat_state(time_s, beat_period)
-    swing_progress = reference.compute_swing_progress(
-        beat_index, beat_fraction, swing_fraction
-    )
     trace = {
         "time_s": time_s,
         "beat_period_s": beat_period_s,
         "step_phase": reference.compute_step_oscillator(
             beat_index, beat_fraction, swing_fraction
         ),
-        "foot_progress": 0.5 * (1.0 - torch.cos(math.pi * swing_progress)),
-        "body_progress": reference.compute_body_progress(beat_fraction, swing_fraction)
-        * reference.BEAT_IS_MOVING[beat_index],
+        "foot_progress": reference.compute_pair_ground_progress(
+            beat_index, beat_fraction, swing_fraction
+        ),
+        "body_progress": reference.compute_body_progress(beat_index, beat_fraction),
         "foot_offsets": reference.compute_foot_offsets(
             beat_index,
             beat_fraction,
@@ -95,13 +92,13 @@ def plot_reference_trace(trace, tempo_bpm, step_size_m):
     oscillator_axis.set_ylabel("step oscillator [rad]")
     oscillator_axis.set_title(
         f"Box-step reference: {tempo_bpm:.0f} BPM, d = {step_size_m:.2f} m "
-        "(dashed lines are beat boundaries; beats 3 and 6 are holds)"
+        "(dashed lines are beat boundaries; every third beat is a wait)"
     )
 
     progress_axis.plot(time_s, trace["foot_progress"][:, 0].numpy(), label="q left")
     progress_axis.plot(time_s, trace["foot_progress"][:, 1].numpy(), label="q right")
     progress_axis.plot(
-        time_s, trace["body_progress"].numpy(), color="k", ls=":", label="p body"
+        time_s, trace["body_progress"].numpy(), color="k", ls=":", label="P body"
     )
     progress_axis.set_ylabel("progress over ground [-]")
 

@@ -218,10 +218,9 @@ class Go2BoxStep(Go2Trot):
         self.previous_foot_contact[:] = foot_contact
 
     def _count_allowed_touchdowns(self):
-        """Return (N, 1): one scheduled touchdown per foot on moving beats."""
+        """Return (N, 4): one scheduled touchdown for each foot stepping this beat."""
         beat_index, _, _ = self._compute_beat_state()
-        is_moving = reference.BEAT_IS_MOVING.to(self.device)[beat_index]
-        return is_moving.float().unsqueeze(1)
+        return reference.compute_stepping_feet(beat_index).float()
 
     # ------------------------------------------------------
     #
@@ -250,17 +249,17 @@ class Go2BoxStep(Go2Trot):
         return torch.exp(-torch.sum(torch.square(error), dim=1) / width**2)
 
     def _reward_tracking_beat_displacement(self):
-        """Body has moved d * p(s) along this beat's direction since the beat began.
+        """Body has moved (d/2) * p(s) along this beat's direction since it began.
 
         Position, not velocity: run Nov13_02-32-57_ covered 19-67 % of each step
         because the velocity reward is zero-target most of the time. By the end
-        of a moving beat p = 1, so the target is the full step; on hold beats
-        the direction is zero, so the target is to stay put.
+        of a moving beat the target is half a step (one side has stepped); on
+        the wait beat the target is to stay put.
         """
-        beat_index, beat_fraction, swing_fraction = self._compute_beat_state()
-        body_progress = reference.compute_body_progress(beat_fraction, swing_fraction)
-        direction = reference.BEAT_DIRECTIONS.to(self.device)[beat_index]
-        target = (self.step_size.squeeze(1) * body_progress).unsqueeze(1) * direction
+        beat_index, beat_fraction, _ = self._compute_beat_state()
+        target = reference.compute_beat_body_shift(
+            beat_index, beat_fraction, self.step_size.squeeze(1)
+        )
         error = torch.sum(torch.square(self.beat_displacement - target), dim=1)
         width = self.cfg.boxstep.displacement_tracking_width
         return torch.exp(-error / width**2)

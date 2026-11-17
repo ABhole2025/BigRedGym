@@ -10,7 +10,7 @@ FOOT_RADIUS_M = 0.022  # go2.urdf foot collision sphere
 
 class Go2BoxStepCfg(Go2TrotCfg):
     class env(Go2TrotCfg.env):
-        episode_length_s = 12  # about 2.3 boxes at 70 BPM (one box = 5.1 s)
+        episode_length_s = 21  # about two boxes at 70 BPM (12 beats = 10.3 s)
 
     class init_state(Go2TrotCfg.init_state):
         # Robots reset in the standing pose (leg IK of the neutral feet). The hip
@@ -21,21 +21,23 @@ class Go2BoxStepCfg(Go2TrotCfg):
 
     class boxstep:
         tempo_bpm_range = [70.0, 70.0]  # changed from 105 BPM on 2026-11-13
-        step_size_range = [0.25, 0.30]  # d [m]
+        # d [m]: how far each side's feet move per bar. 18 cm, decided
+        # 2026-11-14: one side stepping alone cannot reach 25-30 cm sideways.
+        step_size_range = [0.18, 0.18]
         swing_time_s = 0.2  # T_sw, one leg pair's swing
         standing_height_m = STANDING_HEIGHT_M  # h
         swing_clearance_m = 0.06  # g_c
-        # Provisional starting value (not decided by the user): width of the
-        # exp(-|v_ref - v|^2 / width^2) body-velocity reward [m/s]. Reference
-        # peak speed is about 1 m/s at d = 0.25 m, so 0.3 m/s is tighter than
-        # go2trot's tracking_sigma = 0.25 (an effective width of 0.5 m/s).
-        velocity_tracking_width = 0.3
+        # Provisional: width of the exp(-|v_ref - v|^2 / width^2) body-velocity
+        # reward [m/s]. Peak reference speed is about 0.17 m/s (half a step
+        # glided over each 0.86 s beat); was 0.3 for the old ~1 m/s pattern.
+        velocity_tracking_width = 0.15
         # Provisional: width of the exp(-(omega_z / width)^2) yaw-rate reward
         # [rad/s]. At 0.3, the 0.28 rad/s of run Nov13_02-15-31_ scores 0.42.
         yaw_rate_tracking_width = 0.3
-        # Provisional: width of the exp(-|Δx - d·p·e|^2 / width^2) per-beat
-        # displacement reward [m]. Half a 0.27 m step short scores about 0.16.
-        displacement_tracking_width = 0.10
+        # Provisional: width of the exp(-|Δx - (d/2)·p·e|^2 / width^2) per-beat
+        # displacement reward [m]. The body moves 9 cm per moving beat; at
+        # 0.05 m, standing still scores 0.04 (was 0.10 for the old pattern).
+        displacement_tracking_width = 0.05
         # Provisional: width of the exp(-err^2 / width^2) stance-foot placement
         # reward [m]. Run Nov13_15-31-54_ had a 16 cm median error (scores 0.26
         # mean); the reference alone has 9 cm from joint lag (scores 0.42).
