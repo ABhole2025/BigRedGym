@@ -38,6 +38,9 @@ class Go2BoxStepCfg(Go2TrotCfg):
         # displacement reward [m]. The body moves 9 cm per moving beat; at
         # 0.05 m, standing still scores 0.04 (was 0.10 for the old pattern).
         displacement_tracking_width = 0.05
+        # Provisional: width of the exp(-err^2 / width^2) per-foot footfall
+        # reward [m] (world-frame foot travel since the beat began).
+        footfall_tracking_width = 0.05
         # Provisional: width of the exp(-err^2 / width^2) stance-foot placement
         # reward [m]. Run Nov13_15-31-54_ had a 16 cm median error (scores 0.26
         # mean); the reference alone has 9 cm from joint lag (scores 0.42).
@@ -66,6 +69,7 @@ class Go2BoxStepCfg(Go2TrotCfg):
         # Same scale as base_lin_vel so the critic sees both in the same units.
         reference_body_velocity = BASE_HEIGHT_REF
         beat_displacement = 0.3  # about one step [m]
+        beat_foot_displacement = 0.3  # about one step [m]
 
 
 class Go2BoxStepRunnerCfg(Go2TrotRunnerCfg):
@@ -100,6 +104,7 @@ class Go2BoxStepRunnerCfg(Go2TrotRunnerCfg):
             "step_size",
             "reference_body_velocity",
             "beat_displacement",
+            "beat_foot_displacement",
         ]
 
         class reward(Go2TrotRunnerCfg.critic.reward):
@@ -134,8 +139,12 @@ class Go2BoxStepRunnerCfg(Go2TrotRunnerCfg):
                 # New box-step terms.
                 tracking_body_velocity = 4.0  # as go2trot tracking_lin_vel
                 # Body reaches each corner (run Nov13_02-32-57_ covered 19-67 %
-                # of each step). Provisional.
-                tracking_beat_displacement = 4.0
+                # of each step). Lowered from 4.0 on 2026-11-14 so leaning toward
+                # the corner pays less than stepping there. Provisional.
+                tracking_beat_displacement = 2.0
+                # Feet land where scheduled and planted feet stay put (world
+                # frame). Run Nov14_20-08-26_ shifted its body without real steps.
+                tracking_footfalls = 4.0
                 # Stance feet stay under their hips as the reference places them
                 # (back-right foot dragged 20 cm behind in Nov13_15-31-54_).
                 stance_foot_placement = 2.0
