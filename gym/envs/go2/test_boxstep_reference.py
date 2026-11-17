@@ -7,7 +7,7 @@ import torch
 
 from gym.envs.go2 import boxstep_reference as reference
 
-BEAT_PERIOD_S = 60.0 / 70.0
+BEAT_PERIOD_S = 60.0 / 105.0
 SWING_TIME_S = 0.2
 STANDING_HEIGHT_M = 0.30
 SWING_CLEARANCE_M = 0.06
@@ -35,37 +35,19 @@ def compute_box_offsets(step_size_m, beat_period_s=BEAT_PERIOD_S):
     )
 
 
-def compute_offsets_at(beat_index, beat_fraction_value, step_size_m=0.18):
-    count = beat_index.shape[0]
-    return reference.compute_foot_offsets(
+@pytest.mark.parametrize("beat_fraction_value", [0.0, 1.0 - 1e-9])
+def test_foot_offsets_are_zero_at_start_and_end_of_every_beat(beat_fraction_value):
+    beat_index = torch.arange(6)
+    beat_fraction = torch.full((6,), beat_fraction_value, dtype=torch.float64)
+    swing_fraction = SWING_TIME_S / torch.full((6,), BEAT_PERIOD_S, dtype=torch.float64)
+    offsets = reference.compute_foot_offsets(
         beat_index,
-        torch.full((count,), beat_fraction_value, dtype=torch.float64),
-        SWING_TIME_S / torch.full((count,), BEAT_PERIOD_S, dtype=torch.float64),
-        torch.full((count,), step_size_m, dtype=torch.float64),
+        beat_fraction,
+        swing_fraction,
+        torch.full((6,), 0.30, dtype=torch.float64),
         SWING_CLEARANCE_M,
     )
-
-
-def test_foot_offsets_are_zero_at_start_and_end_of_every_bar():
-    bar_starts = torch.arange(0, reference.BEATS_PER_BOX, reference.BEATS_PER_BAR)
-    at_start = compute_offsets_at(bar_starts, 0.0)
-    at_end = compute_offsets_at(bar_starts + 2, 1.0 - 1e-9)
-    torch.testing.assert_close(at_start, torch.zeros_like(at_start), atol=1e-9, rtol=0)
-    torch.testing.assert_close(at_end, torch.zeros_like(at_end), atol=1e-9, rtol=0)
-
-
-def test_foot_offsets_are_continuous_across_every_beat_boundary():
-    beats = torch.arange(reference.BEATS_PER_BOX)
-    end_of_beat = compute_offsets_at(beats, 1.0 - 1e-9)
-    start_of_next = compute_offsets_at((beats + 1) % reference.BEATS_PER_BOX, 0.0)
-    torch.testing.assert_close(end_of_beat, start_of_next, atol=1e-6, rtol=0)
-
-
-def test_one_pair_steps_on_each_moving_beat_and_none_on_wait_beats():
-    pattern = reference.BEAT_STEPPING_PAIR.tolist()
-    # forward: left, right, wait; right: right, left, wait;
-    # back: right, left, wait; left: left, right, wait.
-    assert pattern == [0, 1, -1, 1, 0, -1, 1, 0, -1, 0, 1, -1]
+    torch.testing.assert_close(offsets, torch.zeros_like(offsets), atol=1e-9, rtol=0)
 
 
 def test_forward_then_inverse_kinematics_returns_the_same_angles():
@@ -106,7 +88,7 @@ def test_forward_kinematics_matches_math_notes_default_pose():
 
 def test_reference_angles_put_feet_on_the_commanded_targets():
     time_s, beat_period = sample_whole_box(BEAT_PERIOD_S, samples_per_beat=200)
-    step_size = torch.full_like(time_s, 0.18)
+    step_size = torch.full_like(time_s, 0.30)
     joint_angles = reference.compute_reference_joint_angles(
         time_s,
         beat_period,
@@ -166,20 +148,20 @@ def integrate_body_displacement(time_s, beat_period, step_size_m):
     return torch.trapezoid(velocity, time_s, dim=0)
 
 
-@pytest.mark.parametrize("beat", [0, 1, 3, 4, 6, 7, 9, 10])
-def test_body_displacement_over_one_moving_beat_is_half_the_step_size(beat):
-    step_size_m = 0.18
+@pytest.mark.parametrize("beat", [0, 1, 3, 4])
+def test_body_displacement_over_one_moving_beat_is_the_step_size(beat):
+    step_size_m = 0.25
     samples = 20001
     time_s = (
         beat + torch.linspace(0.0, 1.0 - 1e-12, samples, dtype=torch.float64)
     ) * BEAT_PERIOD_S
     beat_period = torch.full_like(time_s, BEAT_PERIOD_S)
     displacement = integrate_body_displacement(time_s, beat_period, step_size_m)
-    expected = 0.5 * step_size_m * reference.BEAT_DIRECTIONS[beat].to(torch.float64)
+    expected = step_size_m * reference.BEAT_DIRECTIONS[beat].to(torch.float64)
     torch.testing.assert_close(displacement, expected, atol=1e-6, rtol=0)
 
 
-def test_body_displacement_over_the_whole_box_is_zero():
+def test_body_displacement_over_all_six_beats_is_zero():
     time_s, beat_period = sample_whole_box(BEAT_PERIOD_S, samples_per_beat=20000)
     displacement = integrate_body_displacement(time_s, beat_period, 0.30)
     torch.testing.assert_close(
@@ -188,7 +170,7 @@ def test_body_displacement_over_the_whole_box_is_zero():
 
 
 def test_farthest_thigh_to_foot_distance_at_largest_step_is_within_reach():
-    offsets = compute_box_offsets(step_size_m=0.18)
+    offsets = compute_box_offsets(step_size_m=0.30)
     feet = (
         reference.compute_neutral_foot_positions(STANDING_HEIGHT_M).to(torch.float64)
         + offsets
@@ -197,9 +179,8 @@ def test_farthest_thigh_to_foot_distance_at_largest_step_is_within_reach():
     leg_plane_length_squared = foot_y**2 + foot_z**2 - reference.HIP_OFFSET_M**2
     thigh_to_foot = torch.sqrt(foot_x**2 + leg_plane_length_squared)
     assert thigh_to_foot.max() < REACH_LIMIT_M
-    # One side stepping alone: the outward side step at d = 0.18, h = 0.30
-    # reaches about 0.388 m, 1 mm inside the limit (checked 2026-11-14).
-    assert thigh_to_foot.max() == pytest.approx(0.388, abs=2e-3)
+    # MATH 3.7 table: outward side step at d = 0.30, h = 0.30 reaches 0.376 m.
+    assert thigh_to_foot.max() == pytest.approx(0.376, abs=2e-3)
 
 
 def test_hold_beats_have_zero_offsets_and_all_feet_in_stance():
@@ -219,7 +200,7 @@ def test_hold_beats_have_zero_offsets_and_all_feet_in_stance():
     oscillator = reference.compute_step_oscillator(
         beat_index, beat_fraction, swing_fraction
     )
-    hold = beat_index % reference.BEATS_PER_BAR == 2
+    hold = (beat_index == 2) | (beat_index == 5)
     assert hold.any()
     assert torch.equal(offsets[hold], torch.zeros_like(offsets[hold]))
     assert stance[hold].all()

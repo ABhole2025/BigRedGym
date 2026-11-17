@@ -22,13 +22,13 @@ Definitions (thresholds are tunable constants below):
     1. time to stability: on each hold beat, time from the start of the hold
        beat to the start of the first 100 ms stable window inside that beat.
     2. foot repositioning count: touchdowns per pair per beat beyond the ones
-       scheduled (one per foot of the pair stepping that beat, none for the
-       other feet), summed over the pair's two feet.
+       scheduled (one per foot on a moving beat, none on a hold beat), summed
+       over the pair's two feet.
     3. foot repositioning time: per foot and beat, air time after the foot's
-       first touchdown in the beat (for a foot not stepping that beat, after
-       the beat start if it starts down), averaged per pair.
-    4. step timing: first touchdown of each stepping foot minus its scheduled
-       touchdown at sigma*T_b (one pair steps per beat since 2026-11-14).
+       first touchdown in the beat (on hold beats, after the beat start if the
+       foot starts down), averaged per pair.
+    4. step timing: first touchdown of each foot on each moving beat minus its
+       scheduled touchdown (lead pair at sigma*T_b, follow pair at 2*sigma*T_b).
 """
 
 import argparse
@@ -294,14 +294,8 @@ def measure_time_to_stability(log, beats):
     return np.array(times)
 
 
-def find_stepping_feet(beat_index):
-    """Return (4,) bool: the feet of the pair that steps on this beat."""
-    return reference.compute_stepping_feet(torch.tensor([beat_index]))[0].numpy()
-
-
 def count_scheduled_touchdowns(beat_index):
-    """Return (4,) ints: one scheduled touchdown per stepping foot, else none."""
-    return find_stepping_feet(beat_index).astype(int)
+    return 1 if reference.BEAT_IS_MOVING[beat_index] else 0
 
 
 def count_foot_repositioning(log, beats):
@@ -327,7 +321,7 @@ def measure_repositioning_air_time(log, beats):
         for foot in range(4):
             foot_contact = contact[first_step:end_step, env_id, foot]
             foot_touchdowns = touchdowns[first_step:end_step, env_id, foot]
-            if not find_stepping_feet(beat_index)[foot] and foot_contact[0]:
+            if not reference.BEAT_IS_MOVING[beat_index] and foot_contact[0]:
                 anchor = 0
             elif foot_touchdowns.any():
                 anchor = int(np.argmax(foot_touchdowns))
@@ -347,14 +341,14 @@ def measure_step_timing(log, beats, swing_time_s):
             continue
         beat_period = log["beat_period_s"][first_step, env_id]
         swing_fraction = swing_time_s / beat_period
-        stepping_feet = find_stepping_feet(beat_index)
+        left_leads = bool(reference.BEAT_LEADS_WITH_LEFT[beat_index])
         beat_start_time = log["beat_time_s"][first_step, env_id] - (
             log["beat_fraction"][first_step, env_id] * beat_period
         )
         for foot in range(4):
-            if not stepping_feet[foot]:
-                continue
-            scheduled = swing_fraction * beat_period
+            is_left = foot in (0, 2)
+            leads = is_left == left_leads
+            scheduled = (1 if leads else 2) * swing_fraction * beat_period
             foot_touchdowns = touchdowns[first_step:end_step, env_id, foot]
             if not foot_touchdowns.any():
                 errors.append(math.nan)
@@ -375,8 +369,7 @@ def measure_step_timing(log, beats, swing_time_s):
 def measure_beat_displacements(log, beats):
     """Body displacement over each moving beat, in the heading at the beat start.
 
-    Returns rows (along-direction m, across-direction m, commanded shift m),
-    where the commanded shift is d/2 (one side steps d per beat).
+    Returns rows (along-direction m, across-direction m, commanded d m).
     """
     rows = []
     for env_id, first_step, end_step, beat_index in beats:
@@ -395,7 +388,7 @@ def measure_beat_displacements(log, beats):
             [
                 displacement @ direction,
                 displacement @ across,
-                0.5 * log["step_size_m"][first_step, env_id],
+                log["step_size_m"][first_step, env_id],
             ]
         )
     return np.array(rows).reshape(-1, 3)
@@ -408,8 +401,8 @@ def measure_box_displacements(log, beats):
     for env_id, first_step, end_step, beat_index in beats:
         by_env.setdefault(env_id, []).append((first_step, end_step, beat_index))
     for env_id, env_beats in by_env.items():
-        for i in range(len(env_beats) - reference.BEATS_PER_BOX + 1):
-            box = env_beats[i : i + reference.BEATS_PER_BOX]
+        for i in range(len(env_beats) - 5):
+            box = env_beats[i : i + 6]
             consecutive = all(a[1] == b[0] for a, b in zip(box[:-1], box[1:]))
             if box[0][2] == 0 and consecutive:
                 start = log["base_position_m"][box[0][0] - 1, env_id, :2]
@@ -481,7 +474,7 @@ def compute_metrics(log, swing_time_s):
         ),
         "moving_beat_displacement_along_m": summarize(beat_displacements[:, 0]),
         "moving_beat_displacement_across_m": summarize(beat_displacements[:, 1]),
-        "commanded_beat_shift_m": summarize(beat_displacements[:, 2]),
+        "commanded_step_size_m": summarize(beat_displacements[:, 2]),
         "net_displacement_per_box_m": summarize(measure_box_displacements(log, beats)),
         "peak_swing_tracking_error_rad": measure_swing_tracking_error(log, valid),
         "max_tilt_deg_before_fall": float(np.degrees(tilt.max())),

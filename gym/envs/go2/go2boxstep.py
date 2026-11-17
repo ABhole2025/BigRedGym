@@ -46,12 +46,6 @@ class Go2BoxStep(Go2Trot):
         self.beat_start_position = create_column(2)
         self.beat_start_yaw = create_column()
         self.beat_displacement = create_column(2)
-        # Each foot's world xy when the beat started, and its displacement since
-        # then in the beat-start frame, flattened (N, 8) for the critic.
-        self.beat_start_foot_positions = torch.zeros(
-            self.num_envs, 4, 2, dtype=torch.float, device=self.device
-        )
-        self.beat_foot_displacement = create_column(8)
         # Reference foot targets, each in its own hip frame (N, 4, 3).
         self.reference_foot_positions = torch.zeros(
             self.num_envs, 4, 3, dtype=torch.float, device=self.device
@@ -179,10 +173,7 @@ class Go2BoxStep(Go2Trot):
         # Refresh the schedule at the new time so rewards and contacts agree.
         self._update_gait_reference()
         self._count_touchdowns()
-        # Also re-record on an episode's first step: foot positions are only
-        # refreshed by the simulator after the reset.
-        first_step = self.episode_length_buf <= 1
-        self._record_beat_start(self._starts_new_beat() | first_step)
+        self._record_beat_start(self._starts_new_beat())
         self._update_beat_displacement()
 
     def _starts_new_beat(self):
@@ -198,30 +189,19 @@ class Go2BoxStep(Go2Trot):
     def _record_beat_start(self, mask):
         masked_update(self.beat_start_position, self.root_states[:, :2], mask)
         masked_update(self.beat_start_yaw, self._compute_base_yaw().unsqueeze(1), mask)
-        foot_xy = self._rigid_body_pos[:, self.feet_indices, :2]
-        self.beat_start_foot_positions[mask] = foot_xy[mask]
         self.beat_displacement.masked_fill_(mask.unsqueeze(1), 0.0)
-        self.beat_foot_displacement.masked_fill_(mask.unsqueeze(1), 0.0)
-
-    def _rotate_into_beat_start_frame(self, world_xy):
-        """Rotate world xy vectors (N, ..., 2) by minus the beat-start heading."""
-        yaw = self.beat_start_yaw.squeeze(1)
-        shape = (-1,) + (1,) * (world_xy.dim() - 2)
-        cos_yaw = torch.cos(yaw).reshape(shape)
-        sin_yaw = torch.sin(yaw).reshape(shape)
-        along = cos_yaw * world_xy[..., 0] + sin_yaw * world_xy[..., 1]
-        across = -sin_yaw * world_xy[..., 0] + cos_yaw * world_xy[..., 1]
-        return torch.stack((along, across), dim=-1)
 
     def _update_beat_displacement(self):
-        """Body and foot displacement since the beat started, beat-start frame."""
-        body_shift = self.root_states[:, :2] - self.beat_start_position
-        self.beat_displacement[:] = self._rotate_into_beat_start_frame(body_shift)
-        foot_xy = self._rigid_body_pos[:, self.feet_indices, :2]
-        foot_shift = foot_xy - self.beat_start_foot_positions
-        self.beat_foot_displacement[:] = self._rotate_into_beat_start_frame(
-            foot_shift
-        ).reshape(self.num_envs, 8)
+        """Body displacement since the beat started, in the beat-start frame."""
+        world_shift = self.root_states[:, :2] - self.beat_start_position
+        cos_yaw = torch.cos(self.beat_start_yaw.squeeze(1))
+        sin_yaw = torch.sin(self.beat_start_yaw.squeeze(1))
+        self.beat_displacement[:, 0] = (
+            cos_yaw * world_shift[:, 0] + sin_yaw * world_shift[:, 1]
+        )
+        self.beat_displacement[:, 1] = (
+            -sin_yaw * world_shift[:, 0] + cos_yaw * world_shift[:, 1]
+        )
 
     def _detect_foot_contact(self):
         """Return (N, 4) bool: vertical foot force above the contact threshold."""
@@ -238,9 +218,10 @@ class Go2BoxStep(Go2Trot):
         self.previous_foot_contact[:] = foot_contact
 
     def _count_allowed_touchdowns(self):
-        """Return (N, 4): one scheduled touchdown for each foot stepping this beat."""
+        """Return (N, 1): one scheduled touchdown per foot on moving beats."""
         beat_index, _, _ = self._compute_beat_state()
-        return reference.compute_stepping_feet(beat_index).float()
+        is_moving = reference.BEAT_IS_MOVING.to(self.device)[beat_index]
+        return is_moving.float().unsqueeze(1)
 
     # ------------------------------------------------------
     #
@@ -257,16 +238,6 @@ class Go2BoxStep(Go2Trot):
         missing = self.scheduled_stance & ~self._detect_foot_contact()
         return (~missing.any(dim=1)).float()
 
-    def _reward_planted_foot_lift(self):
-        """Penalize each foot scheduled as stance that is off the ground (0 to -4).
-
-        Per foot, unlike the all-or-nothing support reward: run Nov14_20-41-13_
-        bounded with all four feet off the ground 44 % of the time, because
-        once one planted foot was up, lifting the rest cost nothing more.
-        """
-        lifted = self.scheduled_stance & ~self._detect_foot_contact()
-        return -lifted.sum(dim=1).float()
-
     def _reward_swing_contact(self):
         """Penalize load carried by feet scheduled as swing."""
         scheduled_swing = (~self.scheduled_stance).float()
@@ -279,51 +250,20 @@ class Go2BoxStep(Go2Trot):
         return torch.exp(-torch.sum(torch.square(error), dim=1) / width**2)
 
     def _reward_tracking_beat_displacement(self):
-        """Body has moved (d/2) * p(s) along this beat's direction since it began.
+        """Body has moved d * p(s) along this beat's direction since the beat began.
 
         Position, not velocity: run Nov13_02-32-57_ covered 19-67 % of each step
         because the velocity reward is zero-target most of the time. By the end
-        of a moving beat the target is half a step (one side has stepped); on
-        the wait beat the target is to stay put.
+        of a moving beat p = 1, so the target is the full step; on hold beats
+        the direction is zero, so the target is to stay put.
         """
-        beat_index, beat_fraction, _ = self._compute_beat_state()
-        target = reference.compute_beat_body_shift(
-            beat_index, beat_fraction, self.step_size.squeeze(1)
-        )
+        beat_index, beat_fraction, swing_fraction = self._compute_beat_state()
+        body_progress = reference.compute_body_progress(beat_fraction, swing_fraction)
+        direction = reference.BEAT_DIRECTIONS.to(self.device)[beat_index]
+        target = (self.step_size.squeeze(1) * body_progress).unsqueeze(1) * direction
         error = torch.sum(torch.square(self.beat_displacement - target), dim=1)
         width = self.cfg.boxstep.displacement_tracking_width
         return torch.exp(-error / width**2)
-
-    def _reward_tracking_footfalls(self):
-        """Each foot has moved over the ground as scheduled since the beat began.
-
-        Stepping feet: d * (q(s) - q(0)) along the bar's direction, a full step
-        by touchdown. Planted feet: no movement. World positions, so leaning
-        the body cannot satisfy it. Run Nov14_20-08-26_ moved its body 9 cm per
-        beat while the stepping feet covered 2-12 cm of 18 and planted feet
-        slid 7-8 cm. exp(-err^2 / width^2), averaged over the four feet.
-        """
-        beat_index, beat_fraction, swing_fraction = self._compute_beat_state()
-        leg_pair = reference.LEG_PAIR_INDEX.to(self.device)
-        progress_now = reference.compute_pair_ground_progress(
-            beat_index, beat_fraction, swing_fraction
-        )
-        progress_at_start = reference.compute_pair_ground_progress(
-            beat_index, torch.zeros_like(beat_fraction), swing_fraction
-        )
-        progress = (progress_now - progress_at_start)[:, leg_pair]
-        direction = reference.BAR_DIRECTIONS.to(self.device)[
-            beat_index // reference.BEATS_PER_BAR
-        ]
-        target = (
-            self.step_size.reshape(-1, 1, 1)
-            * progress.unsqueeze(2)
-            * direction.unsqueeze(1)
-        )
-        actual = self.beat_foot_displacement.reshape(self.num_envs, 4, 2)
-        error = torch.sum(torch.square(actual - target), dim=2)
-        width = self.cfg.boxstep.footfall_tracking_width
-        return torch.mean(torch.exp(-error / width**2), dim=1)
 
     def _reward_stance_foot_placement(self):
         """Feet scheduled as stance sit where the reference puts them under the hip.
