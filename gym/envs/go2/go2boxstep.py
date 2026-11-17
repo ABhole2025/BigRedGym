@@ -257,6 +257,16 @@ class Go2BoxStep(Go2Trot):
         missing = self.scheduled_stance & ~self._detect_foot_contact()
         return (~missing.any(dim=1)).float()
 
+    def _reward_planted_foot_lift(self):
+        """Penalize each foot scheduled as stance that is off the ground (0 to -4).
+
+        Per foot, unlike the all-or-nothing support reward: run Nov14_20-41-13_
+        bounded with all four feet off the ground 44 % of the time, because
+        once one planted foot was up, lifting the rest cost nothing more.
+        """
+        lifted = self.scheduled_stance & ~self._detect_foot_contact()
+        return -lifted.sum(dim=1).float()
+
     def _reward_swing_contact(self):
         """Penalize load carried by feet scheduled as swing."""
         scheduled_swing = (~self.scheduled_stance).float()

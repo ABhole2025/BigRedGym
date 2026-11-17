@@ -145,6 +145,10 @@ class Go2BoxStepRunnerCfg(Go2TrotRunnerCfg):
                 # Feet land where scheduled and planted feet stay put (world
                 # frame). Run Nov14_20-08-26_ shifted its body without real steps.
                 tracking_footfalls = 4.0
+                # Each planted foot off the ground costs this much per step. Run
+                # Nov14_20-41-13_ bounded (all four feet off 44 % of the time).
+                # Provisional.
+                planted_foot_lift = 1.0
                 # Stance feet stay under their hips as the reference places them
                 # (back-right foot dragged 20 cm behind in Nov13_15-31-54_).
                 stance_foot_placement = 2.0
