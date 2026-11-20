@@ -92,7 +92,7 @@ def test_reference_angles_put_feet_on_the_commanded_targets():
     joint_angles = reference.compute_reference_joint_angles(
         time_s,
         beat_period,
-        SWING_TIME_S,
+        SWING_TIME_S / BEAT_PERIOD_S,
         step_size,
         STANDING_HEIGHT_M,
         SWING_CLEARANCE_M,
@@ -197,14 +197,10 @@ def test_hold_beats_have_zero_offsets_and_all_feet_in_stance():
     stance = reference.compute_scheduled_stance(
         beat_index, beat_fraction, swing_fraction
     )
-    oscillator = reference.compute_step_oscillator(
-        beat_index, beat_fraction, swing_fraction
-    )
     hold = (beat_index == 2) | (beat_index == 5)
     assert hold.any()
     assert torch.equal(offsets[hold], torch.zeros_like(offsets[hold]))
     assert stance[hold].all()
-    assert torch.equal(oscillator[hold], torch.zeros_like(oscillator[hold]))
 
 
 def test_zero_step_size_steps_in_place():
@@ -224,19 +220,23 @@ def test_standing_pose_puts_feet_below_thigh_joints_at_standing_height():
     assert torch.all(standing_angles.reshape(4, 3)[:, 0] == 0.0)
 
 
-def test_pair_phases_have_positive_sine_exactly_while_that_pair_swings():
+def test_beat_clock_crosses_zero_upward_on_every_beat():
     time_s, beat_period = sample_whole_box(BEAT_PERIOD_S)
     beat_index, beat_fraction = reference.compute_beat_state(time_s, beat_period)
-    swing_fraction = SWING_TIME_S / beat_period
-    step_phase = reference.compute_step_oscillator(
-        beat_index, beat_fraction, swing_fraction
+    clock = reference.compute_beat_clock(beat_fraction)
+    sine = clock[:, 0]
+    upward = (sine[:-1] < 0) & (sine[1:] >= 0)
+    crossing_beats = beat_index[1:][upward]
+    # One upward crossing at the start of each beat after the first sample.
+    assert crossing_beats.tolist() == list(range(1, reference.BEATS_PER_BOX))
+    torch.testing.assert_close(
+        clock.square().sum(dim=1), torch.ones_like(sine), atol=1e-9, rtol=0
     )
-    pair_phases = reference.compute_pair_phases(beat_index, step_phase)
-    stance = reference.compute_scheduled_stance(
-        beat_index, beat_fraction, swing_fraction
-    )
-    pair_swinging = ~stance[:, :2]
-    # Skip the lift-off and touchdown instants, where sin(phase) is zero.
-    clear_of_edges = torch.sin(pair_phases).abs() > 1e-6
-    swinging_by_phase = torch.sin(pair_phases) > 0
-    assert torch.equal(swinging_by_phase[clear_of_edges], pair_swinging[clear_of_edges])
+
+
+def test_beat_of_box_is_a_one_hot_of_the_beat_index():
+    beat_index = torch.arange(reference.BEATS_PER_BOX).repeat(3)
+    one_hot = reference.compute_beat_of_box(beat_index)
+    assert one_hot.shape == (beat_index.shape[0], reference.BEATS_PER_BOX)
+    assert torch.equal(one_hot.argmax(dim=1), beat_index)
+    assert torch.equal(one_hot.sum(dim=1), torch.ones(beat_index.shape[0]))
