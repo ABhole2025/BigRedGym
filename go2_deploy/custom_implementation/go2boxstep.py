@@ -1,3 +1,4 @@
+import math
 
 from go2_deploy.custom_implementation.custom_config import CustomConfig
 from gym.envs.go2.go2boxstep_config import Go2BoxStepCfg
@@ -33,11 +34,32 @@ class Go2BoxStepDeploy(CustomConfig):
     class DeployScaling(Go2BoxStepCfg.scaling):
         pass
 
+
     def get_custom_buffers_dict(self):
-        return {}
+        bpm = 70.0
+
+        return {
+            "beat_time": 0.0,
+            "beat_start_time": None,
+            "beat_period": 60.0 / bpm,
+            "tempo_bpm": bpm,
+            "phase": 0.0,
+            "step_size": 0.25,}
 
     def update_custom_buffers(self, main_controller, t):
-        pass
+        # Start the beat clock on the first update.
+        if main_controller.beat_start_time is None:
+            main_controller.beat_start_time = t
+
+        # Elapsed time, not absolute monotonic time.
+        main_controller.beat_time = t - main_controller.beat_start_time
+
+        beat_fraction = (
+            main_controller.beat_time / main_controller.beat_period
+        ) % 1.0
+
+        main_controller.phase = 2.0 * math.pi * beat_fraction
+
 
     def get_custom_obs_pieces(self):
         return {}
