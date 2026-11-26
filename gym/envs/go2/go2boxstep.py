@@ -1,25 +1,26 @@
 # AI-assisted: Go2BoxStep task (buffers, beat clock, reference, observations,
-# rewards) written from BOXSTEP_PROJECT_MAP.md on top of Go2Trot.
+# rewards) written from BOXSTEP_PROJECT_MAP.md. Built on Go2 since 2026-11-20
+# (PR review): it only borrows the residual-on-a-reference control from Go2Trot.
 import torch
 
 from gym.envs.go2 import boxstep_reference as reference
-from gym.envs.go2.go2trot import Go2Trot
+from gym.envs.go2.go2 import Go2
 from gym.utils.sampling import masked_update, torch_rand_float
 
 
-class Go2BoxStep(Go2Trot):
+class Go2BoxStep(Go2):
     """Waltz box step in a pace gait, driven by a beat clock.
 
     The reference supplies absolute joint angles in gait_reference (default joint
-    angles are zero), and the policy adds dof_pos_target corrections, as in
-    Go2Trot._compute_torques.
+    angles are zero), and the policy adds dof_pos_target corrections on top. All
+    beat-clock math lives in boxstep_reference, shared with the deploy code.
     """
 
     def _init_buffers(self):
-        # Go2Trot._init_buffers ends by calling the phase-observation and
-        # gait-reference updates, which read these buffers.
-        self._create_boxstep_buffers()
         super()._init_buffers()
+        self._create_boxstep_buffers()
+        self._update_clock_observations()
+        self._update_gait_reference()
 
     def _create_boxstep_buffers(self):
         settings = self.cfg.boxstep
@@ -31,13 +32,22 @@ class Go2BoxStep(Go2Trot):
 
         nominal_tempo_bpm = sum(settings.tempo_bpm_range) / 2.0
         nominal_step_size_m = sum(settings.step_size_range) / 2.0
+        # Beat clock state: time since beat 1 of the box, and the beat period.
         self.beat_time = create_column()
         self.beat_period = create_column(fill=60.0 / nominal_tempo_bpm)
         self.step_size = create_column(fill=nominal_step_size_m)
-        self.step_oscillator_obs = create_column(4)
-        self.box_phase_obs = create_column(2)
+        # Clock observations: music clock (sin, cos), tempo, beat of the box.
+        self.beat_clock_obs = create_column(2)
+        self.tempo_bpm = create_column(fill=nominal_tempo_bpm)
+        self.beat_of_box_obs = create_column(reference.BEATS_PER_BOX)
+        # Reference outputs.
+        self.gait_reference = torch.zeros_like(self.dof_pos_target)
+        self.reference_foot_positions = torch.zeros(
+            self.num_envs, 4, 3, dtype=torch.float, device=self.device
+        )
         self.scheduled_stance = create_column(4, True, torch.bool)
         self.reference_body_velocity = create_column(2)
+        # Touchdown counting.
         self.touchdown_count = create_column(4)
         self.previous_foot_contact = create_column(4, True, torch.bool)
         self.new_touchdown = create_column(4, False, torch.bool)
@@ -46,11 +56,10 @@ class Go2BoxStep(Go2Trot):
         self.beat_start_position = create_column(2)
         self.beat_start_yaw = create_column()
         self.beat_displacement = create_column(2)
-        # Reference foot targets, each in its own hip frame (N, 4, 3).
-        self.reference_foot_positions = torch.zeros(
-            self.num_envs, 4, 3, dtype=torch.float, device=self.device
-        )
 
+        self._actuated_dof_pos_limits = self.dof_pos_limits.index_select(
+            0, self.actuated_dof_indices
+        )
         neutral_feet = reference.compute_neutral_foot_positions(
             settings.standing_height_m, self.device
         )
@@ -65,28 +74,29 @@ class Go2BoxStep(Go2Trot):
     # ------------------------------------------------------
 
     def _compute_beat_state(self):
-        """Return (beat_index, beat_fraction, swing_fraction), each (N,)."""
-        beat_period = self.beat_period.squeeze(1)
-        beat_index, beat_fraction = reference.compute_beat_state(
-            self.beat_time.squeeze(1), beat_period
+        """Return (beat_index, beat_fraction) (N,) from the shared beat clock."""
+        return reference.compute_beat_state(
+            self.beat_time.squeeze(1), self.beat_period.squeeze(1)
         )
-        swing_fraction = self.cfg.boxstep.swing_time_s / beat_period
-        return beat_index, beat_fraction, swing_fraction
 
-    def _advance_phase(self):
-        # Runs once per physics substep, like Go2Trot._advance_phase.
+    def _post_physics_step(self):
+        super()._post_physics_step()
+        # Runs once per physics substep.
         self.beat_time.add_(self.dt / self.cfg.control.decimation)
-        _, beat_fraction, _ = self._compute_beat_state()
-        self.phase[:] = 2 * torch.pi * beat_fraction.unsqueeze(1)
+
+    def _update_clock_observations(self):
+        beat_index, beat_fraction = self._compute_beat_state()
+        self.beat_clock_obs[:] = reference.compute_beat_clock(beat_fraction)
+        self.beat_of_box_obs[:] = reference.compute_beat_of_box(beat_index)
 
     def _update_gait_reference(self):
         settings = self.cfg.boxstep
-        beat_index, beat_fraction, swing_fraction = self._compute_beat_state()
+        beat_index, beat_fraction = self._compute_beat_state()
         step_size = self.step_size.squeeze(1)
         self.reference_foot_positions[:] = reference.compute_reference_foot_positions(
             self.beat_time.squeeze(1),
             self.beat_period.squeeze(1),
-            settings.swing_time_s,
+            settings.swing_fraction,
             step_size,
             settings.standing_height_m,
             settings.swing_clearance_m,
@@ -95,33 +105,42 @@ class Go2BoxStep(Go2Trot):
             self.reference_foot_positions
         )
         self.scheduled_stance[:] = reference.compute_scheduled_stance(
-            beat_index, beat_fraction, swing_fraction
+            beat_index, beat_fraction, settings.swing_fraction
         )
         self.reference_body_velocity[:] = reference.compute_body_velocity(
             beat_index,
             beat_fraction,
-            swing_fraction,
+            settings.swing_fraction,
             step_size,
             self.beat_period.squeeze(1),
         )
 
-    def _update_phase_observation(self):
-        super()._update_phase_observation()
-        beat_index, beat_fraction, swing_fraction = self._compute_beat_state()
-        step_phase = reference.compute_step_oscillator(
-            beat_index, beat_fraction, swing_fraction
+    def _pre_decimation_step(self):
+        self._update_gait_reference()
+        reference_pos = self.gait_reference + self.default_dof_pos.index_select(
+            1, self.actuated_dof_indices
         )
-        pair_phases = reference.compute_pair_phases(beat_index, step_phase)
-        # Order: sin left, cos left, sin right, cos right.
-        self.step_oscillator_obs[:] = torch.stack(
-            (torch.sin(pair_phases), torch.cos(pair_phases)), dim=2
-        ).reshape(self.num_envs, 4)
-        box_phase = reference.compute_box_phase(
-            self.beat_time.squeeze(1), self.beat_period.squeeze(1)
+        # Bound the full PD target (reference + correction) to the joint limits;
+        # keep the applied correction so observations and action rewards see it.
+        self.dof_pos_target.clamp_(
+            min=self._actuated_dof_pos_limits[:, 0] - reference_pos,
+            max=self._actuated_dof_pos_limits[:, 1] - reference_pos,
         )
-        self.box_phase_obs[:] = torch.stack(
-            (torch.sin(box_phase), torch.cos(box_phase)), dim=1
+
+    def _compute_torques(self):
+        """PD on reference + policy correction (+ default, zero for this task)."""
+        pos = self.dof_pos.index_select(1, self.actuated_dof_indices)
+        vel = self.dof_vel.index_select(1, self.actuated_dof_indices)
+        default_pos = self.default_dof_pos.index_select(1, self.actuated_dof_indices)
+        torques = (
+            self.p_gains
+            * (self.gait_reference + self.dof_pos_target + default_pos - pos)
+            + self.d_gains * (self.dof_vel_target - vel)
+            + self.tau_ff
         )
+        return torch.clip(
+            torques, -self.actuated_torque_limits, self.actuated_torque_limits
+        ).view(self.torques.shape)
 
     # ------------------------------------------------------
     #
@@ -130,7 +149,7 @@ class Go2BoxStep(Go2Trot):
     # ------------------------------------------------------
 
     def reset_to_basic(self, reset_mask):
-        """Reset to the standing pose instead of Go2Trot's straight legs."""
+        """Reset to the standing pose (leg IK of the neutral feet)."""
         super().reset_to_basic(reset_mask)
         masked_update(self.dof_pos, self._standing_dof_pos, reset_mask)
 
@@ -148,15 +167,26 @@ class Go2BoxStep(Go2Trot):
         )
         beat_period = 60.0 / tempo_bpm
         masked_update(self.beat_period, beat_period, reset_mask)
+        masked_update(self.tempo_bpm, tempo_bpm, reset_mask)
         masked_update(self.step_size, step_size, reset_mask)
+        # Episodes start on a beat boundary of a random beat of the box.
         masked_update(self.beat_time, starting_beat * beat_period, reset_mask)
-        masked_update(self.phase_frequency, tempo_bpm / 60.0, reset_mask)
-        # Episodes start on a beat boundary, so the beat fraction is zero.
-        self.phase.masked_fill_(reset_mask.unsqueeze(1), 0.0)
         self.touchdown_count.masked_fill_(reset_mask.unsqueeze(1), 0.0)
         self.previous_foot_contact.masked_fill_(reset_mask.unsqueeze(1), True)
         self.new_touchdown.masked_fill_(reset_mask.unsqueeze(1), False)
         self._record_beat_start(reset_mask)
+
+    def _reset_idx(self, reset_mask):
+        super()._reset_idx(reset_mask)
+        # Corrections start at zero, on top of the reference.
+        self.dof_pos_target.masked_fill_(reset_mask.unsqueeze(1), 0.0)
+        self._update_gait_reference()
+        masked_update(
+            self.dof_pos_history,
+            self.dof_pos_target.tile(1, 3),
+            reset_mask,
+        )
+        self._update_clock_observations()
 
     def _resample_commands(self, command_mask):
         """No velocity commands in the box step: commands stay zero."""
@@ -170,6 +200,7 @@ class Go2BoxStep(Go2Trot):
 
     def _post_decimation_step(self):
         super()._post_decimation_step()
+        self._update_clock_observations()
         # Refresh the schedule at the new time so rewards and contacts agree.
         self._update_gait_reference()
         self._count_touchdowns()
@@ -178,7 +209,7 @@ class Go2BoxStep(Go2Trot):
 
     def _starts_new_beat(self):
         """Return (N,) bool: True on the first control step of a beat."""
-        _, beat_fraction, _ = self._compute_beat_state()
+        _, beat_fraction = self._compute_beat_state()
         return beat_fraction * self.beat_period.squeeze(1) < self.dt
 
     def _compute_base_yaw(self):
@@ -211,7 +242,6 @@ class Go2BoxStep(Go2Trot):
     def _count_touchdowns(self):
         foot_contact = self._detect_foot_contact()
         self.new_touchdown[:] = foot_contact & ~self.previous_foot_contact
-        _, beat_fraction, _ = self._compute_beat_state()
         # The first control step of each beat clears that beat's count.
         self.touchdown_count.masked_fill_(self._starts_new_beat().unsqueeze(1), 0.0)
         self.touchdown_count.add_(self.new_touchdown.float())
@@ -219,7 +249,7 @@ class Go2BoxStep(Go2Trot):
 
     def _count_allowed_touchdowns(self):
         """Return (N, 1): one scheduled touchdown per foot on moving beats."""
-        beat_index, _, _ = self._compute_beat_state()
+        beat_index, _ = self._compute_beat_state()
         is_moving = reference.BEAT_IS_MOVING.to(self.device)[beat_index]
         return is_moving.float().unsqueeze(1)
 
@@ -228,6 +258,16 @@ class Go2BoxStep(Go2Trot):
     # Rewards
     #
     # ------------------------------------------------------
+
+    def _foot_contact_strength(self):
+        """Map upward foot load smoothly from zero to nominal body weight."""
+        load = torch.clamp(
+            self.contact_forces[:, self.feet_indices, 2]
+            / (9.81 * self._backend.link_mass.sum(dim=1, keepdim=True)),
+            min=0.0,
+            max=1.0,
+        )
+        return load.square() * (3.0 - 2.0 * load)
 
     def _reward_scheduled_support(self):
         """1 when every foot scheduled as stance is in contact, else 0.
@@ -257,8 +297,10 @@ class Go2BoxStep(Go2Trot):
         of a moving beat p = 1, so the target is the full step; on hold beats
         the direction is zero, so the target is to stay put.
         """
-        beat_index, beat_fraction, swing_fraction = self._compute_beat_state()
-        body_progress = reference.compute_body_progress(beat_fraction, swing_fraction)
+        beat_index, beat_fraction = self._compute_beat_state()
+        body_progress = reference.compute_body_progress(
+            beat_fraction, self.cfg.boxstep.swing_fraction
+        )
         direction = reference.BEAT_DIRECTIONS.to(self.device)[beat_index]
         target = (self.step_size.squeeze(1) * body_progress).unsqueeze(1) * direction
         error = torch.sum(torch.square(self.beat_displacement - target), dim=1)
@@ -284,7 +326,7 @@ class Go2BoxStep(Go2Trot):
     def _reward_tracking_ang_vel(self):
         """Yaw rate held at zero: exp(-(omega_z / width)^2).
 
-        Overrides Go2Trot's version, which squares the error twice, so turning
+        Overrides Go2's version, which squares the error twice, so turning
         at 0.28 rad/s cost 0.06 % of the reward; run Nov13_02-15-31_ drifted
         5-44 deg clockwise over two boxes.
         """

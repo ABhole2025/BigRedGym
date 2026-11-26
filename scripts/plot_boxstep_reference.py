@@ -37,7 +37,7 @@ def compute_reference_trace(tempo_bpm, step_size_m, settings):
     )
     beat_period = torch.full_like(time_s, beat_period_s)
     step_size = torch.full_like(time_s, step_size_m)
-    swing_fraction = settings.swing_time_s / beat_period
+    swing_fraction = settings.swing_fraction
 
     beat_index, beat_fraction = reference.compute_beat_state(time_s, beat_period)
     swing_progress = reference.compute_swing_progress(
@@ -46,9 +46,8 @@ def compute_reference_trace(tempo_bpm, step_size_m, settings):
     trace = {
         "time_s": time_s,
         "beat_period_s": beat_period_s,
-        "step_phase": reference.compute_step_oscillator(
-            beat_index, beat_fraction, swing_fraction
-        ),
+        "beat_clock": reference.compute_beat_clock(beat_fraction),
+        "beat_index": beat_index,
         "foot_progress": 0.5 * (1.0 - torch.cos(math.pi * swing_progress)),
         "body_progress": reference.compute_body_progress(beat_fraction, swing_fraction)
         * reference.BEAT_IS_MOVING[beat_index],
@@ -65,7 +64,7 @@ def compute_reference_trace(tempo_bpm, step_size_m, settings):
         "joint_angles": reference.compute_reference_joint_angles(
             time_s,
             beat_period,
-            settings.swing_time_s,
+            settings.swing_fraction,
             step_size,
             settings.standing_height_m,
             settings.swing_clearance_m,
@@ -91,8 +90,12 @@ def plot_reference_trace(trace, tempo_bpm, step_size_m):
         joint_axis,
     ) = axes
 
-    oscillator_axis.plot(time_s, trace["step_phase"].numpy(), label="theta")
-    oscillator_axis.set_ylabel("step oscillator [rad]")
+    oscillator_axis.plot(time_s, trace["beat_clock"][:, 0].numpy(), label="sin beat")
+    oscillator_axis.plot(time_s, trace["beat_clock"][:, 1].numpy(), label="cos beat")
+    oscillator_axis.plot(
+        time_s, trace["beat_index"].numpy() / 5.0, color="k", ls=":", label="beat/5"
+    )
+    oscillator_axis.set_ylabel("clock inputs [-]")
     oscillator_axis.set_title(
         f"Box-step reference: {tempo_bpm:.0f} BPM, d = {step_size_m:.2f} m "
         "(dashed lines are beat boundaries; beats 3 and 6 are holds)"

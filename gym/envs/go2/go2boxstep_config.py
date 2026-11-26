@@ -1,18 +1,22 @@
 # AI-assisted: box-step task and runner configs built from BOXSTEP_PLAN.md and the
 # config section of BOXSTEP_PROJECT_MAP.md. Reward weights and the velocity
 # tracking width are provisional starting values, not decisions by the user.
-from gym.envs.go2.go2_config import BASE_HEIGHT_REF
-from gym.envs.go2.go2trot_config import Go2TrotCfg, Go2TrotRunnerCfg
+# Built on Go2Cfg since 2026-11-20 (PR review); the values that used to come
+# from Go2TrotCfg are now set here explicitly.
+from gym.envs.go2.go2_config import BASE_HEIGHT_REF, Go2Cfg, Go2RunnerCfg
 
 STANDING_HEIGHT_M = 0.30  # hip joint above the foot centres, decided 2026-11-10
 FOOT_RADIUS_M = 0.022  # go2.urdf foot collision sphere
 
 
-class Go2BoxStepCfg(Go2TrotCfg):
-    class env(Go2TrotCfg.env):
+class Go2BoxStepCfg(Go2Cfg):
+    class env(Go2Cfg.env):
         episode_length_s = 12  # about 2.3 boxes at 70 BPM (one box = 5.1 s)
 
-    class init_state(Go2TrotCfg.init_state):
+    class init_state(Go2Cfg.init_state):
+        # The reference supplies absolute joint angles, so the default posture
+        # the policy's corrections are added to is zero.
+        default_joint_angles = {"hip": 0.0, "thigh": 0.0, "calf": 0.0}
         # Robots reset in the standing pose (leg IK of the neutral feet). The hip
         # joints sit level with the base origin in go2.urdf, so the base starts
         # at the standing height plus the foot radius, feet touching the floor.
@@ -22,7 +26,9 @@ class Go2BoxStepCfg(Go2TrotCfg):
     class boxstep:
         tempo_bpm_range = [70.0, 70.0]  # changed from 105 BPM on 2026-11-13
         step_size_range = [0.25, 0.30]  # d [m]
-        swing_time_s = 0.2  # T_sw, one leg pair's swing
+        # sigma: one leg pair's swing as a fraction of the beat, so it scales
+        # with the tempo (PR review). 0.2 s at 70 BPM, as before.
+        swing_fraction = 0.2 * 70.0 / 60.0
         standing_height_m = STANDING_HEIGHT_M  # h
         swing_clearance_m = 0.06  # g_c
         # Provisional starting value (not decided by the user): width of the
@@ -41,16 +47,27 @@ class Go2BoxStepCfg(Go2TrotCfg):
         # mean); the reference alone has 9 cm from joint lag (scores 0.42).
         foot_placement_width = 0.10
 
-    class asset(Go2TrotCfg.asset):
+    class asset(Go2Cfg.asset):
         # Head_upper and Head_lower are separate bodies from base on the Go2.
         # Run Nov10_21-15-58_ learned to rest its face on the floor at 40 deg
         # pitch because only base contact ended an episode.
         terminate_after_contacts_on = ["base", "Head"]
 
-    class push_robots(Go2TrotCfg.push_robots):
+    class push_robots(Go2Cfg.push_robots):
         toggle = False  # no pushes until the box works
+        interval_s = 5
 
-    class reward_settings(Go2TrotCfg.reward_settings):
+    class domain_randomization(Go2Cfg.domain_randomization):
+        class startup(Go2Cfg.domain_randomization.startup):
+            link_mass_scale_range = [0.9, 1.2]
+
+        class episode(Go2Cfg.domain_randomization.episode):
+            scale_ranges = {
+                "p_gains": [0.9, 1.1],
+                "d_gains": [0.8, 1.2],
+            }
+
+    class reward_settings(Go2Cfg.reward_settings):
         # Provisional starting value: vertical foot force that counts as contact
         # for touchdown counting, support reward and slip penalty [N]
         # (about 3 % of body weight).
@@ -60,29 +77,32 @@ class Go2BoxStepCfg(Go2TrotCfg):
         # rewarding the body for staying up.
         base_height_target = STANDING_HEIGHT_M + FOOT_RADIUS_M
 
-    class scaling(Go2TrotCfg.scaling):
+    class scaling(Go2Cfg.scaling):
         # Same scale as base_lin_vel so the critic sees both in the same units.
         reference_body_velocity = BASE_HEIGHT_REF
         beat_displacement = 0.3  # about one step [m]
+        tempo_bpm = 100.0  # 70 BPM observed as 0.7
 
 
-class Go2BoxStepRunnerCfg(Go2TrotRunnerCfg):
-    class actor(Go2TrotRunnerCfg.actor):
-        # 52 numbers. No velocity or height commands, no foot contacts.
+class Go2BoxStepRunnerCfg(Go2RunnerCfg):
+    class actor(Go2RunnerCfg.actor):
+        # 52 numbers. No velocity commands, no foot contacts. Timing inputs
+        # (slimmed after PR review): the music clock (sin, cos of the beat),
+        # the tempo, and which beat of the box it is (one-hot, 6).
         obs = [
             "base_ang_vel",
             "projected_gravity",
             "dof_pos_obs",
             "dof_vel",
             "dof_pos_target",
-            "phase_obs",
-            "phase_frequency",
-            "step_oscillator_obs",
-            "box_phase_obs",
+            "beat_clock_obs",
+            "tempo_bpm",
+            "beat_of_box_obs",
             "step_size",
         ]
+        smooth_exploration = False
 
-    class critic(Go2TrotRunnerCfg.critic):
+    class critic(Go2RunnerCfg.critic):
         obs = [
             "base_height",
             "base_lin_vel",
@@ -91,23 +111,21 @@ class Go2BoxStepRunnerCfg(Go2TrotRunnerCfg):
             "dof_pos_obs",
             "dof_vel",
             "dof_pos_target",
-            "phase_obs",
-            "phase_frequency",
-            "step_oscillator_obs",
-            "box_phase_obs",
+            "beat_clock_obs",
+            "tempo_bpm",
+            "beat_of_box_obs",
             "step_size",
             "reference_body_velocity",
             "beat_displacement",
         ]
+        normalize_obs = False
 
-        class reward(Go2TrotRunnerCfg.critic.reward):
+        class reward(Go2RunnerCfg.critic.reward):
             # Provisional starting values, modeled on Go2TrotRunnerCfg. None of
             # these weights has been decided by the user; review before training.
-            class weights(Go2TrotRunnerCfg.critic.reward.weights):
-                # Off: no velocity or height commands in this task.
+            class weights(Go2RunnerCfg.critic.reward.weights):
+                # Off: no velocity commands in this task.
                 tracking_lin_vel = 0.0
-                tracking_base_height = 0.0
-                trot_support = 0.0
                 # Kept from go2trot (same values unless noted).
                 tracking_ang_vel = 2.0  # yaw rate target is zero
                 lin_vel_z = 0.25  # go2trot has 0.0; the plan keeps this term
@@ -145,5 +163,23 @@ class Go2BoxStepRunnerCfg(Go2TrotRunnerCfg):
                 # over 1 rad per joint and crouched with one leg tucked up.
                 correction_size = 2.0
 
-    class runner(Go2TrotRunnerCfg.runner):
+    class algorithm(Go2RunnerCfg.algorithm):
+        # Same PPO settings as Go2TrotRunnerCfg.
+        gamma = 0.99
+        lam = 0.95
+        batch_size = 2**15
+        max_gradient_steps = 24
+        clip_param = 0.2
+        learning_rate = 1.0e-3
+        max_grad_norm = 1.0
+        rollout_size = 2**16
+        use_clipped_value_loss = True
+        entropy_coef = 0.01
+        schedule = "adaptive"
+        desired_kl = 0.01
+        lr_range = [2e-5, 1e-2]
+        lr_ratio = 1.5
+
+    class runner(Go2RunnerCfg.runner):
         experiment_name = "go2boxstep"
+        max_iterations = 1000  # what our best runs used

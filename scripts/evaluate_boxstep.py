@@ -126,9 +126,8 @@ def build_env_and_runner(args):
 def restart_box_clock(env):
     """Start every robot's clock on beat 1 (the operator's key press)."""
     env.beat_time.zero_()
-    env.phase.zero_()
     env._update_gait_reference()
-    env._update_phase_observation()
+    env._update_clock_observations()
 
 
 # ------------------------------------------------------
@@ -332,7 +331,7 @@ def measure_repositioning_air_time(log, beats):
     return np.array(air_times).reshape(-1, 2)
 
 
-def measure_step_timing(log, beats, swing_time_s):
+def measure_step_timing(log, beats, swing_fraction):
     """Metric 4: first touchdown minus scheduled touchdown [s]; NaN if missing."""
     touchdowns = find_touchdowns(log)
     errors = []
@@ -340,7 +339,6 @@ def measure_step_timing(log, beats, swing_time_s):
         if not reference.BEAT_IS_MOVING[beat_index]:
             continue
         beat_period = log["beat_period_s"][first_step, env_id]
-        swing_fraction = swing_time_s / beat_period
         left_leads = bool(reference.BEAT_LEADS_WITH_LEFT[beat_index])
         beat_start_time = log["beat_time_s"][first_step, env_id] - (
             log["beat_fraction"][first_step, env_id] * beat_period
@@ -448,7 +446,7 @@ def summarize(values):
     }
 
 
-def compute_metrics(log, swing_time_s):
+def compute_metrics(log, swing_fraction):
     valid = find_valid_steps(log)
     beats = list_complete_beats(log, valid)
     repositioning = count_foot_repositioning(log, beats)
@@ -470,7 +468,7 @@ def compute_metrics(log, swing_time_s):
             pair: summarize(air_time[:, i]) for i, pair in enumerate(PAIR_NAMES)
         },
         "4_touchdown_minus_scheduled_s": summarize(
-            measure_step_timing(log, beats, swing_time_s)
+            measure_step_timing(log, beats, swing_fraction)
         ),
         "moving_beat_displacement_along_m": summarize(beat_displacements[:, 0]),
         "moving_beat_displacement_across_m": summarize(beat_displacements[:, 1]),
@@ -489,7 +487,7 @@ def main():
         log = run_rollout(env, runner, rollout_s)
     os.makedirs(os.path.dirname(STEP_LOG_PATH), exist_ok=True)
     write_step_log(log, STEP_LOG_PATH)
-    metrics = compute_metrics(log, env.cfg.boxstep.swing_time_s)
+    metrics = compute_metrics(log, env.cfg.boxstep.swing_fraction)
     metrics["mode"] = "reference_only" if args.reference_only else "policy"
     with open(METRICS_PATH, "w") as file:
         json.dump(metrics, file, indent=2)
